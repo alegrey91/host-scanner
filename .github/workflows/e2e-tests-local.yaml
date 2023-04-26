@@ -1,0 +1,45 @@
+name: e2e
+
+on:
+  push:
+    branches: [ "*" ]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+#  pull_request:
+#    branches: [ "*" ]
+#    paths-ignore:
+#      - 'docs/**'
+#      - 'README.md'
+
+jobs:
+  kind:
+    name: Kubernetes
+    strategy:
+      fail-fast: false
+      matrix:
+        #k8s-version: ['v1.24.7', 'v1.25.3', 'v1.26.1', '1.27.0']
+        k8s-version: ['v1.24.0', 'v1.25.0']
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '1.18'
+      - uses: azure/setup-kubectl@v3
+        id: install
+      - uses: engineerd/setup-kind@v0.5.0
+        with:
+          skipClusterCreation: true
+          version: v0.18.0
+      - name: setup test clusters
+        run: |
+          kind create cluster \
+            --name kind-${{ matrix.k8s-version }} \
+            --image kindest/node:${{ matrix.k8s-version }}
+      - name: install host-scanner
+        run: kubectl apply -f deployment/k8s-deployment.yaml
+      - name: e2e testing
+        run: ls e2e/*
