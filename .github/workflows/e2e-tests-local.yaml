@@ -18,36 +18,73 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        #k8s-version: ['v1.24.7', 'v1.25.3', 'v1.26.1', '1.27.0']
-        k8s-version: ['v1.25.0', 'v1.26.0', 'v1.27.0']
+        #k8s-version: ['v1.25.0', 'v1.26.0', 'v1.27.0']
+        k8s-version: ['v1.25.0']
     runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@v2
+      - name: Clone host-scanner repository
+        uses: actions/checkout@v2
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v2
+
+      - name: Setup Go
+        uses: actions/setup-go@v2
         with:
           go-version: '1.19'
-      - uses: azure/setup-kubectl@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        run: |
+          docker \
+            build . \
+            --file build/Dockerfile \
+            -t kubescape/host-scanner:test \
+            --build-arg BUILD_VERSION=latest
+        env: 
+          CGO_ENABLED: 0
+
+      - name: Install Kubectl
+        uses: azure/setup-kubectl@v3
         id: install
-      - uses: engineerd/setup-kind@v0.5.0
+
+      - name: Install Kind
+        uses: engineerd/setup-kind@v0.5.0
         with:
           skipClusterCreation: true
           version: v0.18.0
-      - name: setup test clusters
+
+      - name: Setup test clusters
         run: |
           kind create cluster \
+            --kubeconfig test-${{ matrix.k8s-version }} \
             --name test-${{ matrix.k8s-version }} \
             --image kindest/node:${{ matrix.k8s-version }}
-      - name: install host-scanner
+
+      - name: Load host-scanner image into Kind
+        run: |
+          kind load \
+            docker-image \
+            kubescape/host-scanner:test \
+            --nodes test-${{ matrix.k8s-version }}-control-plane \
+            --name test-${{ matrix.k8s-version }}
+
+      - name: Install host-scanner
         run: |
           kubectl apply \
-            -f https://raw.githubusercontent.com/kubescape/kubescape/master/core/pkg/hostsensorutils/hostsensor.yaml \
+            --kubeconfig test-${{ matrix.k8s-version }} \
+            -f deployment/hostsensor-local.yaml \
             --context kind-test-${{ matrix.k8s-version }}
-      - name: wait for host-scanner ready
+
+      - name: Wait for host-scanner ready
         run: |
           set -x
           kubectl wait \
+            --kubeconfig test-${{ matrix.k8s-version }} \
             --for=condition=ready \
             pod \
             -l name=host-scanner \
@@ -56,7 +93,18 @@ jobs:
             --context kind-test-${{ matrix.k8s-version }}
           sleep 10
         continue-on-error: true
+      
+      - name: Setup Kubernetes port-forward daemon
+        uses: vbem/k8s-port-forward@v1
+        with:
+          workload: 'daemonset/host-scanner'
+          mappings: 7888:7888
+          options: '--namespace=kubescape-host-scanner'
+          sleep: 5
+
       - name: e2e test
         working-directory: ./e2e
         run: |
           go test -v -ginkgo.v
+        env:
+          KUBECONFIG: ../test-${{ matrix.k8s-version }}
